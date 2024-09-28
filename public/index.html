@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>
+      Record and Upload Audio to Google Drive with Waveform & Playhead
+    </title>
+    <!-- Include WaveSurfer.js -->
+    <script src="https://unpkg.com/wavesurfer.js"></script>
+    <style>
+      #waveform {
+        width: 100%;
+        height: 128px;
+        background-color: #f0f0f0;
+      }
+      #controls {
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>
+      Record Audio, View Waveform with Playhead, and Upload to Google Drive
+    </h1>
+
+    <button id="startRecord">Start Recording</button>
+    <button id="stopRecord" disabled>Stop Recording</button>
+    <button id="playAudio" disabled>Play Audio</button>
+    <button id="pauseAudio" disabled>Pause Audio</button>
+    <button id="upload" disabled>Upload to Google Drive</button>
+
+    <div id="waveform"></div>
+    <!-- Waveform container -->
+
+    <div id="controls">
+      <audio id="audioPlayback" controls style="display: none"></audio>
+    </div>
+
+    <!-- Google API Script -->
+    <script src="https://apis.google.com/js/api.js"></script>
+
+    <script>
+      let mediaRecorder;
+      let audioChunks = [];
+      let audioBlob;
+      let audioUrl;
+      let audioElement = document.getElementById("audioPlayback");
+      let playButton = document.getElementById("playAudio");
+      let pauseButton = document.getElementById("pauseAudio");
+      let wavesurfer; // For WaveSurfer.js
+
+      // Function to initialize Google API
+      function initGoogleAPI() {
+        gapi.load("client:auth2", initClient);
+      }
+
+      function initClient() {
+        gapi.client
+          .init({
+            apiKey: "YOUR_API_KEY", // Replace with your Google API Key
+            clientId: "YOUR_CLIENT_ID.apps.googleusercontent.com", // Replace with your Client ID
+            scope: "https://www.googleapis.com/auth/drive.file",
+            discoveryDocs: [
+              "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+            ],
+          })
+          .then(function () {
+            gapi.auth2.getAuthInstance().isSignedIn.listen(updateSigninStatus);
+            updateSigninStatus(gapi.auth2.getAuthInstance().isSignedIn.get());
+          });
+      }
+
+      function updateSigninStatus(isSignedIn) {
+        if (isSignedIn) {
+          document.getElementById("upload").disabled = false;
+        } else {
+          gapi.auth2.getAuthInstance().signIn();
+        }
+      }
+
+      // Initialize WaveSurfer
+      function initWaveSurfer() {
+        wavesurfer = WaveSurfer.create({
+          container: "#waveform",
+          waveColor: "violet",
+          progressColor: "purple",
+          cursorColor: "red", // Cursor color for the playhead
+          height: 128,
+          responsive: true,
+        });
+      }
+
+      document.getElementById("startRecord").onclick = async function () {
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+          });
+          mediaRecorder = new MediaRecorder(stream);
+
+          mediaRecorder.ondataavailable = function (event) {
+            if (event.data.size > 0) {
+              audioChunks.push(event.data);
+            }
+          };
+
+          mediaRecorder.onstop = async function () {
+            audioBlob = new Blob(audioChunks, { type: "audio/wav" });
+            audioUrl = URL.createObjectURL(audioBlob);
+            audioElement.src = audioUrl;
+
+            // Create a file reader to load the blob
+            let fileReader = new FileReader();
+            fileReader.readAsArrayBuffer(audioBlob);
+
+            // Once fileReader is done, pass audio buffer to WaveSurfer
+            fileReader.onloadend = function () {
+              wavesurfer.loadBlob(audioBlob); // Load the audio blob into WaveSurfer
+            };
+
+            playButton.disabled = false;
+            pauseButton.disabled = false;
+            document.getElementById("upload").disabled = false;
+          };
+
+          mediaRecorder.start();
+          document.getElementById("stopRecord").disabled = false;
+          document.getElementById("startRecord").disabled = true;
+        } else {
+          alert("Audio recording is not supported in your browser.");
+        }
+      };
+
+      document.getElementById("stopRecord").onclick = function () {
+        mediaRecorder.stop();
+        document.getElementById("startRecord").disabled = false;
+        document.getElementById("stopRecord").disabled = true;
+      };
+
+      // Play audio and move playhead
+      playButton.onclick = function () {
+        // wavesurfer.seekTo(0); // Move the playhead to the beginning
+        wavesurfer.play(); // Start playing the audio and moving the playhead
+      };
+
+      // Pause audio playback
+      pauseButton.onclick = function () {
+        wavesurfer.pause(); // Pause the audio playback
+      };
+
+      // Upload to Google Drive
+      document.getElementById("upload").onclick = function () {
+        const fileName = `recording_${Date.now()}.wav`;
+
+        const fileMetadata = {
+          name: fileName,
+          mimeType: "audio/wav",
+        };
+
+        const form = new FormData();
+        form.append(
+          "metadata",
+          new Blob([JSON.stringify(fileMetadata)], { type: "application/json" })
+        );
+        form.append("file", audioBlob);
+
+        gapi.client
+          .request({
+            path: "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+            method: "POST",
+            params: {
+              uploadType: "multipart",
+            },
+            headers: {
+              "Content-Type": "multipart/related",
+            },
+            body: form,
+          })
+          .then((response) => {
+            alert("File uploaded successfully!");
+          })
+          .catch((error) => {
+            alert("Failed to upload file: " + error.message);
+          });
+      };
+
+      // Load Google API client and initialize WaveSurfer after page load
+      window.onload = function () {
+        // initGoogleAPI();
+        initWaveSurfer();
+      };
+    </script>
+  </body>
+</html>
