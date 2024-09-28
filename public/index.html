@@ -7,7 +7,10 @@
       Record and Upload Audio to Google Drive with Waveform & Playhead
     </title>
     <!-- Include WaveSurfer.js -->
-    <script src="https://unpkg.com/wavesurfer.js"></script>
+    <!-- <script src="https://unpkg.com/wavesurfer.js"></script> -->
+    <script src="https://unpkg.com/wavesurfer.js@7"></script>
+    <!-- <script src="https://unpkg.com/wavesurfer.js/dist/plugin/wavesurfer.microphone.min.js"></script> -->
+    <script src="https://unpkg.com/wavesurfer.js@7/dist/plugins/record.min.js"></script>
     <style>
       #waveform {
         width: 100%;
@@ -27,10 +30,14 @@
     <button id="startRecord">Start Recording</button>
     <button id="stopRecord" disabled>Stop Recording</button>
     <button id="playAudio" disabled>Play Audio</button>
-    <button id="pauseAudio" disabled>Pause Audio</button>
+    <button id="pauseButton" disabled>Pause Audio</button>
     <button id="upload" disabled>Upload to Google Drive</button>
+    <input type="checkbox" id="scrollingWaveform" />
+    <select id="mic-select"></select>
 
     <div id="waveform"></div>
+    <div id="recordings"></div>
+    <div id="progress">00:00</div>
     <!-- Waveform container -->
 
     <div id="controls">
@@ -41,154 +48,162 @@
     <script src="https://apis.google.com/js/api.js"></script>
 
     <script>
-      let mediaRecorder;
-      let audioChunks = [];
-      let audioBlob;
-      let audioUrl;
-      let audioElement = document.getElementById("audioPlayback");
-      let playButton = document.getElementById("playAudio");
-      let pauseButton = document.getElementById("pauseAudio");
-      let wavesurfer; // For WaveSurfer.js
+      let wavesurfer, record;
+      let scrollingWaveform = false;
 
-      // Function to initialize Google API
-      function initGoogleAPI() {
-        gapi.load("client:auth2", initClient);
-      }
-
-      function initClient() {
-        gapi.client
-          .init({
-            apiKey: "YOUR_API_KEY", // Replace with your Google API Key
-            clientId: "YOUR_CLIENT_ID.apps.googleusercontent.com", // Replace with your Client ID
-            scope: "https://www.googleapis.com/auth/drive.file",
-            discoveryDocs: [
-              "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
-            ],
-          })
-          .then(function () {
-            gapi.auth2.getAuthInstance().isSignedIn.listen(updateSigninStatus);
-            updateSigninStatus(gapi.auth2.getAuthInstance().isSignedIn.get());
-          });
-      }
-
-      function updateSigninStatus(isSignedIn) {
-        if (isSignedIn) {
-          document.getElementById("upload").disabled = false;
-        } else {
-          gapi.auth2.getAuthInstance().signIn();
+      const createWaveSurfer = () => {
+        console.log("init");
+        // Create an instance of WaveSurfer
+        if (wavesurfer) {
+          wavesurfer.destroy();
         }
-      }
-
-      // Initialize WaveSurfer
-      function initWaveSurfer() {
         wavesurfer = WaveSurfer.create({
           container: "#waveform",
-          waveColor: "violet",
-          progressColor: "purple",
-          cursorColor: "red", // Cursor color for the playhead
-          height: 128,
-          responsive: true,
+          waveColor: "rgb(200, 0, 200)",
+          progressColor: "rgb(100, 0, 100)",
+        });
+        console.log(wavesurfer);
+        // Initialize the Record plugin
+        record = wavesurfer.registerPlugin(
+          WaveSurfer.Record.create({
+            scrollingWaveform,
+            renderRecordedAudio: false,
+          })
+        );
+        // Render recorded audio
+        record.on("record-end", (blob) => {
+          const container = document.querySelector("#recordings");
+          const recordedUrl = URL.createObjectURL(blob);
+
+          // Create wavesurfer from the recorded audio
+          const wavesurfer = WaveSurfer.create({
+            container,
+            waveColor: "rgb(200, 100, 0)",
+            progressColor: "rgb(100, 50, 0)",
+            url: recordedUrl,
+          });
+
+          // Play button
+          const button = container.appendChild(
+            document.createElement("button")
+          );
+          button.textContent = "Play";
+          button.onclick = () => wavesurfer.playPause();
+          wavesurfer.on("pause", () => (button.textContent = "Play"));
+          wavesurfer.on("play", () => (button.textContent = "Pause"));
+
+          // Download link
+          const link = container.appendChild(document.createElement("a"));
+          Object.assign(link, {
+            href: recordedUrl,
+            download:
+              "recording." + blob.type.split(";")[0].split("/")[1] || "webm",
+            textContent: "Download recording",
+          });
+        });
+        pauseButton.style.display = "none";
+        recButton.textContent = "Record";
+
+        record.on("record-progress", (time) => {
+          updateProgress(time);
+        });
+      };
+
+      const progress = document.querySelector("#progress");
+      const updateProgress = (time) => {
+        // time will be in milliseconds, convert it to mm:ss format
+        const formattedTime = [
+          Math.floor((time % 3600000) / 60000), // minutes
+          Math.floor((time % 60000) / 1000), // seconds
+        ]
+          .map((v) => (v < 10 ? "0" + v : v))
+          .join(":");
+        progress.textContent = formattedTime;
+      };
+
+      const pauseButton = document.querySelector("#pauseButton");
+      pauseButton.onclick = () => {
+        if (record.isPaused()) {
+          record.resumeRecording();
+          pauseButton.textContent = "Pause";
+          return;
+        }
+
+        record.pauseRecording();
+        pauseButton.textContent = "Resume";
+      };
+
+      const micSelect = document.querySelector("#mic-select");
+      {
+        // Mic selection
+        WaveSurfer.Record.getAvailableAudioDevices().then((devices) => {
+          devices.forEach((device) => {
+            const option = document.createElement("option");
+            option.value = device.deviceId;
+            option.text = device.label || device.deviceId;
+            micSelect.appendChild(option);
+          });
         });
       }
+      // Record button
+      const recButton = document.querySelector("#startRecord");
 
-      document.getElementById("startRecord").onclick = async function () {
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-          });
-          mediaRecorder = new MediaRecorder(stream);
-
-          mediaRecorder.ondataavailable = function (event) {
-            if (event.data.size > 0) {
-              audioChunks.push(event.data);
-            }
-          };
-
-          mediaRecorder.onstop = async function () {
-            audioBlob = new Blob(audioChunks, { type: "audio/wav" });
-            audioUrl = URL.createObjectURL(audioBlob);
-            audioElement.src = audioUrl;
-
-            // Create a file reader to load the blob
-            let fileReader = new FileReader();
-            fileReader.readAsArrayBuffer(audioBlob);
-
-            // Once fileReader is done, pass audio buffer to WaveSurfer
-            fileReader.onloadend = function () {
-              wavesurfer.loadBlob(audioBlob); // Load the audio blob into WaveSurfer
-            };
-
-            playButton.disabled = false;
-            pauseButton.disabled = false;
-            document.getElementById("upload").disabled = false;
-          };
-
-          mediaRecorder.start();
-          document.getElementById("stopRecord").disabled = false;
-          document.getElementById("startRecord").disabled = true;
-        } else {
-          alert("Audio recording is not supported in your browser.");
+      recButton.onclick = () => {
+        if (record.isRecording() || record.isPaused()) {
+          record.stopRecording();
+          recButton.textContent = "Record";
+          pauseButton.style.display = "none";
+          return;
         }
+
+        recButton.disabled = true;
+
+        // reset the wavesurfer instance
+
+        // get selected device
+        const deviceId = micSelect.value;
+        record.startRecording({ deviceId }).then(() => {
+          recButton.textContent = "Stop";
+          recButton.disabled = false;
+          pauseButton.style.display = "inline";
+        });
+      };
+      document.querySelector('input[type="checkbox"]').onclick = (e) => {
+        scrollingWaveform = e.target.checked;
+        createWaveSurfer();
       };
 
-      document.getElementById("stopRecord").onclick = function () {
-        mediaRecorder.stop();
-        document.getElementById("startRecord").disabled = false;
-        document.getElementById("stopRecord").disabled = true;
-      };
+      createWaveSurfer();
 
-      // Play audio and move playhead
-      playButton.onclick = function () {
-        // wavesurfer.seekTo(0); // Move the playhead to the beginning
-        wavesurfer.play(); // Start playing the audio and moving the playhead
-      };
+      /*
+<html>
+  <h1 style="margin-top: 0">Press Record to start recording 🎙️</h1>
 
-      // Pause audio playback
-      pauseButton.onclick = function () {
-        wavesurfer.pause(); // Pause the audio playback
-      };
+  <p>
+    📖 <a href="https://wavesurfer.xyz/docs/classes/plugins_record.RecordPlugin">Record plugin docs</a>
+  </p>
 
-      // Upload to Google Drive
-      document.getElementById("upload").onclick = function () {
-        const fileName = `recording_${Date.now()}.wav`;
+  <button id="record">Record</button>
+  <button id="pause" style="display: none;">Pause</button>
 
-        const fileMetadata = {
-          name: fileName,
-          mimeType: "audio/wav",
-        };
+  <select id="mic-select">
+    <option value="" hidden>Select mic</option>
+  </select>
+  <label style="display:inline-block;"><input type="checkbox"  /> Scrolling waveform</label>
+  <p id="progress">00:00</p>
 
-        const form = new FormData();
-        form.append(
-          "metadata",
-          new Blob([JSON.stringify(fileMetadata)], { type: "application/json" })
-        );
-        form.append("file", audioBlob);
+  <div id="mic" style="border: 1px solid #ddd; border-radius: 4px; margin-top: 1rem"></div>
 
-        gapi.client
-          .request({
-            path: "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-            method: "POST",
-            params: {
-              uploadType: "multipart",
-            },
-            headers: {
-              "Content-Type": "multipart/related",
-            },
-            body: form,
-          })
-          .then((response) => {
-            alert("File uploaded successfully!");
-          })
-          .catch((error) => {
-            alert("Failed to upload file: " + error.message);
-          });
-      };
+  <div id="recordings" style="margin: 1rem 0"></div>
 
-      // Load Google API client and initialize WaveSurfer after page load
-      window.onload = function () {
-        // initGoogleAPI();
-        initWaveSurfer();
-      };
+  <style>
+    button {
+      min-width: 5rem;
+      margin: 1rem 1rem 1rem 0;
+    }
+  </style>
+</html>
+*/
     </script>
   </body>
 </html>
